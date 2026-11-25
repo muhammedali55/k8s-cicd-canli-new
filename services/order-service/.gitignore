@@ -1,0 +1,6 @@
+# Maven çıktıları ve IDE dosyaları
+target/
+.idea/
+.vscode/
+*.iml
+.DS_Store

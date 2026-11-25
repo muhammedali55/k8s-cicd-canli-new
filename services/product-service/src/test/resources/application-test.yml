@@ -1,0 +1,8 @@
+# "test" profili: PostgreSQL yerine bellek içi H2 kullanır.
+# MODE=PostgreSQL sayesinde aynı Flyway migration'ları H2'de de çalışır.
+spring:
+  datasource:
+    url: jdbc:h2:mem:products;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_DELAY=-1
+    username: sa
+    password: ""
+    driver-class-name: org.h2.Driver

@@ -1,0 +1,23 @@
+# order-service için yatay otomatik ölçekleme (HPA).
+# Ortalama CPU kullanımı, pod'un CPU "request"inin (100m) %70'ini geçerse replika artar; en az 2, en fazla 5.
+# CPU ölçümünü metrics-server sağlar (setup-cluster.sh kurar).
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: order-service
+  labels:
+    app: order-service
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: order-service
+  minReplicas: 2
+  maxReplicas: 5
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

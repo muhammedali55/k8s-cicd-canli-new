@@ -1,0 +1,6 @@
+# Derleme çıktıları ve IDE dosyaları git'e girmez.
+target/
+.idea/
+.vscode/
+*.iml
+.DS_Store

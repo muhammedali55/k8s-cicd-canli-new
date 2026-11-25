@@ -1,0 +1,35 @@
+# /api/products ile başlayan istekleri product-service Service'ine (8080) yönlendirir.
+# Ör. curl http://localhost/api/products -> demo-gateway -> product-service:8080
+# İkinci kural: /info/products isteğini URLRewrite ile servisin /api/info ucuna çevirir.
+# Ör. curl http://localhost/info/products -> product-service:8080/api/info (canlıda yeni sürümü görmek için)
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: product-service
+  labels:
+    app: product-service
+spec:
+  parentRefs:
+    - name: demo-gateway
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api/products
+      backendRefs:
+        - name: product-service
+          port: 8080
+    # /info/products -> /api/info (yol tamamen değiştirilir)
+    - matches:
+        - path:
+            type: Exact
+            value: /info/products
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplaceFullPath
+              replaceFullPath: /api/info
+      backendRefs:
+        - name: product-service
+          port: 8080

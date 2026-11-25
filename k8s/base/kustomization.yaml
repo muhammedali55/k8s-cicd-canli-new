@@ -1,0 +1,26 @@
+# Kustomize "base": ortamdan bağımsız tüm manifest'ler.
+# Namespace ve imaj tag'i burada değil, overlay'de (k8s/overlays/dev) belirlenir.
+#
+# Not: "postgres-credentials" Secret'ı bilerek burada YOK. Gizli bilgi git'e yazılmaz;
+# cluster/setup-cluster.sh Secret'ı "kubectl create secret" ile oluşturur.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  # Veritabanı
+  - postgres/init-configmap.yaml
+  - postgres/service.yaml
+  - postgres/statefulset.yaml
+  # product-service
+  - product-service/configmap.yaml
+  - product-service/deployment.yaml
+  - product-service/service.yaml
+  # order-service
+  - order-service/configmap.yaml
+  - order-service/deployment.yaml
+  - order-service/service.yaml
+  - order-service/hpa.yaml
+  # Dış erişim (Gateway API)
+  - gateway/gateway.yaml
+  - gateway/httproute-products.yaml
+  - gateway/httproute-orders.yaml

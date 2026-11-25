@@ -1,0 +1,156 @@
+// =============================================================================
+// Jenkinsfile — .github/workflows/ci.yml + cd.yml ile AYNI mantık
+// -----------------------------------------------------------------------------
+// Checkout → Test → Build Image → Push → Deploy
+//   - Yalnızca değişen servis derlenir (GitHub'daki paths filtresinin karşılığı).
+//   - İki servis paralel çalışır (GitHub'daki matrix'in karşılığı).
+//   - İmaj etiketi: kısa git SHA (7 karakter).
+//   - Push ve Deploy pull request'lerde çalışmaz; PR'da yalnızca test.
+//
+// Gerekli credential'lar (jenkins/README.md'de nasıl ekleneceği anlatılıyor):
+//   ghcr-creds  → Username + Password (GitHub kullanıcı adı + PAT, write:packages)
+//   kubeconfig  → Secret file (kind get kubeconfig --internal ile üretilen dosya)
+//
+// UYARI: GitOps modu (Argo CD, selfHeal: true) açıksa Deploy aşamasını
+// kullanmayın; Argo CD, kubectl set image ile yapılan değişikliği geri alır.
+// =============================================================================
+
+pipeline {
+    // Herhangi bir Jenkins agent'ında çalış (lokal kurulumda: Jenkins'in kendisi).
+    agent any
+
+    // GitHub Actions'taki "on: push" karşılığı: GitHub webhook'u gelince çalış.
+    triggers {
+        githubPush()
+    }
+
+    // GitHub Actions'taki üst düzey "env:" karşılığı.
+    environment {
+        IMAGE_PREFIX = 'ghcr.io/muhammedali55'
+        NAMESPACE    = 'demo'
+    }
+
+    options {
+        // Konsol çıktısına zaman damgası ekle, eski build'lerden 20 tanesini tut.
+        timestamps()
+        buildDiscarder(logRotator(numToKeepStr: '20'))
+        // GitHub Actions'taki "concurrency" karşılığı: aynı anda tek build.
+        disableConcurrentBuilds()
+    }
+
+    stages {
+        // GitHub Actions karşılığı: actions/checkout + "İmaj etiketini hesapla" adımı.
+        stage('Checkout') {
+            steps {
+                checkout scm
+                script {
+                    // Kısa SHA (7 karakter) — ci.yml'deki ${GITHUB_SHA::7} ile aynı.
+                    env.IMAGE_TAG = sh(returnStdout: true, script: 'git rev-parse --short=7 HEAD').trim()
+                    echo "İmaj etiketi: ${env.IMAGE_TAG}"
+                }
+            }
+        }
+
+        // GitHub Actions karşılığı: "build" job'undaki strategy.matrix.
+        stage('Servisler') {
+            matrix {
+                axes {
+                    axis {
+                        name 'SERVICE'
+                        values 'product-service', 'order-service'
+                    }
+                }
+                // GitHub Actions karşılığı: dorny/paths-filter — servis değişmediyse atla.
+                when {
+                    expression { serviceChanged(env.SERVICE) }
+                }
+                stages {
+                    // GitHub Actions karşılığı: "Test (./mvnw verify)" adımı.
+                    // Maven önbelleği (~/.m2) jenkins_home volume'unda kalıcıdır
+                    // (actions/setup-java'nın "cache: maven" karşılığı).
+                    stage('Test') {
+                        steps {
+                            dir("services/${SERVICE}") {
+                                sh './mvnw -B verify'
+                            }
+                        }
+                    }
+
+                    // GitHub Actions karşılığı: setup-buildx + build-push-action (build kısmı).
+                    // PR'larda çalışmaz (ci.yml'deki "if: github.event_name == 'push'").
+                    stage('Build Image') {
+                        when { not { changeRequest() } }
+                        steps {
+                            // Kısa SHA imaja APP_VERSION olarak gömülür (ci.yml'deki build-args karşılığı).
+                            sh 'docker build --build-arg APP_VERSION="${IMAGE_TAG}" -t "${IMAGE_PREFIX}/${SERVICE}:${IMAGE_TAG}" "services/${SERVICE}"'
+                        }
+                    }
+
+                    // GitHub Actions karşılığı: docker/login-action + build-push-action (push kısmı).
+                    // GitHub'da GITHUB_TOKEN vardı; Jenkins'te ghcr-creds credential'ı kullanılır.
+                    stage('Push') {
+                        when { not { changeRequest() } }
+                        steps {
+                            withCredentials([usernamePassword(credentialsId: 'ghcr-creds',
+                                                              usernameVariable: 'GHCR_USER',
+                                                              passwordVariable: 'GHCR_TOKEN')]) {
+                                // Tek tırnak: secret Groovy'de değil, shell'de açılır (loga sızmaz).
+                                sh '''
+                                    echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+                                    docker push "${IMAGE_PREFIX}/${SERVICE}:${IMAGE_TAG}"
+                                '''
+                            }
+                        }
+                    }
+
+                    // GitHub Actions karşılığı: cd.yml (self-hosted runner'daki deploy job'u).
+                    // kubeconfig credential'ı geçici bir dosyaya yazılır ve KUBECONFIG ayarlanır.
+                    stage('Deploy') {
+                        when { not { changeRequest() } }
+                        steps {
+                            withKubeConfig([credentialsId: 'kubeconfig']) {
+                                sh '''
+                                    IMAGE="${IMAGE_PREFIX}/${SERVICE}:${IMAGE_TAG}"
+
+                                    # 1) Deployment'ı yeni imaja geçir (container adı = servis adı).
+                                    kubectl -n "$NAMESPACE" set image "deployment/${SERVICE}" "${SERVICE}=${IMAGE}"
+
+                                    # 2) Yeni pod'lar hazır olana kadar en fazla 120 sn bekle.
+                                    if ! kubectl -n "$NAMESPACE" rollout status "deployment/${SERVICE}" --timeout=120s; then
+                                        # 3) Olmadıysa önceki sürüme dön ve stage'i kırmızı bitir.
+                                        echo "${SERVICE} rollout başarısız, önceki sürüme dönülüyor."
+                                        kubectl -n "$NAMESPACE" rollout undo "deployment/${SERVICE}"
+                                        exit 1
+                                    fi
+                                '''
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        // Build sonunda registry oturumunu kapat (kimlik bilgisi diskte kalmasın).
+        always {
+            sh 'docker logout ghcr.io || true'
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Yardımcı fonksiyon: bu servis son başarılı build'den beri değişti mi?
+// ci.yml'deki paths filtresinin karşılığı: services/<servis>/** ya da Jenkinsfile.
+// -----------------------------------------------------------------------------
+def serviceChanged(String service) {
+    // Daha önce hiç başarılı build yoksa (ilk çalıştırma) her şeyi derle.
+    def base = env.GIT_PREVIOUS_SUCCESSFUL_COMMIT
+    if (!base) {
+        return true
+    }
+    // git diff ile değişen dosyaları listele, servis klasörüyle eşleşen var mı bak.
+    def status = sh(returnStatus: true,
+                    script: "git diff --name-only ${base} HEAD | grep -qE '^(services/${service}/|jenkins/Jenkinsfile)'")
+    return status == 0
+}

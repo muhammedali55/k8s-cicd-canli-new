@@ -1,0 +1,18 @@
+# Dış dünyadan gelen HTTP trafiğinin giriş kapısı (Gateway API).
+# gatewayClassName "traefik": bu Gateway'i Helm ile kurulan Traefik yönetir.
+# Port 8000: Traefik'te listener port'u, Traefik'in "web" entrypoint port'uyla AYNI olmalı.
+#   Dışarıdan erişim: localhost:80 -> kind node:80 -> Traefik hostPort 80 -> entrypoint 8000.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: demo-gateway
+spec:
+  gatewayClassName: traefik
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 8000
+      # Yalnızca Gateway ile aynı namespace'teki (demo) HTTPRoute'lar bağlanabilir.
+      allowedRoutes:
+        namespaces:
+          from: Same

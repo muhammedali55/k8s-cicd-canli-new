@@ -1,0 +1,11 @@
+# Docker build bağlamına gönderilmeyecek dosyalar (imajı küçük ve build'i hızlı tutar)
+target/
+.idea/
+.vscode/
+*.iml
+.DS_Store
+*.log
+Dockerfile
+.dockerignore
+.git
+.gitignore

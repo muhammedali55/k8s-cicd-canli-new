@@ -1,0 +1,236 @@
+# =============================================================================
+# CI — Sürekli Entegrasyon
+# -----------------------------------------------------------------------------
+# Ne yapar?
+#   - Pull request açıldığında: yalnızca TEST (./mvnw verify). İmaj üretilmez.
+#   - main'e push olduğunda: TEST → Docker imajı BUILD → GHCR'a PUSH.
+#   - Yalnızca kodu değişen servis derlenir (paths filtresi + matrix).
+#   - İmaj etiketi: kısa git SHA (7 karakter). "latest" kullanılmaz.
+#
+# Deploy iki yoldan biriyle yapılır (repo değişkeni DEPLOY_MODE ile seçilir):
+#   - Yol A (varsayılan): bu workflow bitince cd.yml çalışır, kubectl set image yapar.
+#   - Yol B (DEPLOY_MODE=gitops): bu dosyadaki "gitops-update" job'u
+#     k8s/overlays/dev/kustomization.yaml'ı günceller, Argo CD cluster'a uygular.
+#   Repo değişkeni: Settings → Secrets and variables → Actions → Variables.
+# =============================================================================
+
+# Workflow'un adı. cd.yml bu isimle (workflow_run) bu workflow'u dinler.
+name: CI
+
+# Tetikleyiciler: hangi olaylarda çalışacağız?
+on:
+  # PR açıldığında / güncellendiğinde: yalnızca test koşar.
+  pull_request:
+    # Sadece servis kodu ya da bu dosya değiştiyse çalış.
+    paths:
+      - "services/**"
+      - ".github/workflows/ci.yml"
+  # main'e push (merge) olduğunda: tam pipeline (test + build + push).
+  push:
+    branches: [main]
+    paths:
+      - "services/**"
+      - ".github/workflows/ci.yml"
+
+# Aynı branch için yeni bir çalışma başlarsa eskisini iptal et (kaynak tasarrufu).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# GITHUB_TOKEN'a verilen en az yetki. Ek secret gerekmez.
+permissions:
+  contents: read        # kodu checkout etmek için
+  packages: write       # GHCR'a imaj push etmek için
+  pull-requests: read   # paths-filter PR'daki değişen dosyaları okuyabilsin diye
+
+# Tüm job'ların göreceği ortak değişkenler.
+env:
+  # İmajların gideceği registry ve kullanıcı (SPEC: ghcr.io/<kullanıcı>/<servis>).
+  IMAGE_PREFIX: ghcr.io/muhammedali55
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1) Hangi servis değişti? Sonuç bir JSON liste: ["product-service"] gibi.
+  #    Bu liste aşağıdaki matrix'i besler; değişmeyen servis hiç derlenmez.
+  # ---------------------------------------------------------------------------
+  changes:
+    runs-on: ubuntu-24.04
+    # Bu job'un çıktısı: değişen servislerin listesi.
+    outputs:
+      services: ${{ steps.filter.outputs.changes }}
+    steps:
+      # Kodu çek (push olayında paths-filter git geçmişine bakar).
+      - name: Kodu checkout et
+        uses: actions/checkout@v4.2.2
+
+      # dorny/paths-filter: her filtre adı = servis adı. Eşleşen filtreler
+      # "changes" çıktısında JSON liste olarak döner.
+      # ci.yml değişirse iki servis de derlensin ki pipeline değişikliği test edilsin.
+      - name: Değişen servisleri bul
+        id: filter
+        uses: dorny/paths-filter@v3.0.2
+        with:
+          filters: |
+            product-service:
+              - "services/product-service/**"
+              - ".github/workflows/ci.yml"
+            order-service:
+              - "services/order-service/**"
+              - ".github/workflows/ci.yml"
+
+  # ---------------------------------------------------------------------------
+  # 2) Her değişen servis için: test → (yalnızca main'de) build + push.
+  # ---------------------------------------------------------------------------
+  build:
+    # Önce "changes" job'u bitsin; onun çıktısını kullanacağız.
+    needs: changes
+    # Hiçbir servis değişmediyse bu job'u atla.
+    if: needs.changes.outputs.services != '[]'
+    runs-on: ubuntu-24.04
+    strategy:
+      # Bir servis kırılsa da diğeri sonuna kadar çalışsın.
+      fail-fast: false
+      matrix:
+        # Değişen servis listesi JSON'dan matrix'e çevrilir.
+        service: ${{ fromJSON(needs.changes.outputs.services) }}
+    # Bu job içindeki "run" adımları servis klasöründe çalışır.
+    defaults:
+      run:
+        working-directory: services/${{ matrix.service }}
+    steps:
+      # Kodu çek.
+      - name: Kodu checkout et
+        uses: actions/checkout@v4.2.2
+
+      # Java 21 (Temurin) kur ve Maven bağımlılık önbelleğini (~/.m2) aç.
+      # Önbellek anahtarı servisin pom.xml'inden üretilir.
+      - name: JDK 21 kur (Maven cache ile)
+        uses: actions/setup-java@v4.7.1
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+          cache-dependency-path: services/${{ matrix.service }}/pom.xml
+
+      # Testleri ve tüm doğrulamaları çalıştır. Kırmızıysa pipeline burada durur.
+      # -B: batch mod (renkli/etkileşimli çıktı yok, loglar okunaklı).
+      - name: Test (./mvnw verify)
+        run: ./mvnw -B verify
+
+      # Kısa SHA'yı hesapla (7 karakter). Jenkinsfile da aynı uzunluğu kullanır.
+      - name: İmaj etiketini hesapla
+        id: meta
+        if: github.event_name == 'push'
+        run: |
+          echo "tag=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "image=${IMAGE_PREFIX}/${{ matrix.service }}:${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      # Buildx: Docker'ın gelişmiş build motoru (cache, çoklu platform).
+      # PR'larda imaj üretmiyoruz; bu ve sonraki adımlar yalnızca push'ta.
+      - name: Docker Buildx kur
+        if: github.event_name == 'push'
+        uses: docker/setup-buildx-action@v3.10.0
+
+      # GHCR'a giriş. Şifre yerine workflow'un kendi GITHUB_TOKEN'ı kullanılır.
+      - name: GHCR'a giriş yap
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Servisin Dockerfile'ı ile imajı derle ve GHCR'a gönder.
+      # cache-from/to "gha": katmanlar GitHub Actions cache'inde saklanır,
+      # sonraki build'ler hızlanır.
+      - name: İmajı build et ve push et
+        if: github.event_name == 'push'
+        uses: docker/build-push-action@v6.18.0
+        with:
+          context: services/${{ matrix.service }}
+          push: true
+          tags: ${{ steps.meta.outputs.image }}
+          # Kısa SHA imaja APP_VERSION olarak gömülür (GET /api/info bunu gösterir).
+          build-args: |
+            APP_VERSION=${{ steps.meta.outputs.tag }}
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+
+      # cd.yml hangi servisin hangi imaja geçeceğini bilsin diye
+      # küçük bir dosya bırakıyoruz: deploy/<servis>.txt → tam imaj adı.
+      - name: Deploy bilgisini dosyaya yaz
+        if: github.event_name == 'push'
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/deploy"
+          echo "${{ steps.meta.outputs.image }}" > "$GITHUB_WORKSPACE/deploy/${{ matrix.service }}.txt"
+
+      # Bu dosyayı artifact olarak yükle; cd.yml indirecek.
+      - name: Deploy bilgisini artifact olarak yükle
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: deploy-${{ matrix.service }}
+          path: deploy/${{ matrix.service }}.txt
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # 3) Yol B — GitOps: imaj etiketini Git'e yaz, Argo CD gerisini halletsin.
+  #    Varsayılan KAPALI. Yalnızca repo değişkeni DEPLOY_MODE=gitops iken çalışır.
+  #    Bu modda cd.yml çalışmaz (orada da aynı koşul var).
+  # ---------------------------------------------------------------------------
+  gitops-update:
+    needs: [changes, build]
+    # Sadece main'e push'ta ve GitOps modu açıkken.
+    if: github.event_name == 'push' && vars.DEPLOY_MODE == 'gitops'
+    runs-on: ubuntu-24.04
+    # Bu job repoya commit atacağı için yazma yetkisi gerekiyor.
+    permissions:
+      contents: write
+    env:
+      # Kustomize'ı sabit bir sürümle kuruyoruz.
+      KUSTOMIZE_VERSION: v5.4.3
+      # Değişen servis listesi (JSON), örn. ["product-service","order-service"].
+      SERVICES: ${{ needs.changes.outputs.services }}
+    steps:
+      # Kodu çek (commit atabilmek için tam checkout).
+      - name: Kodu checkout et
+        uses: actions/checkout@v4.2.2
+
+      # Kustomize CLI'ı resmi release'ten indir.
+      - name: Kustomize kur
+        run: |
+          curl -sSL -o kustomize.tar.gz \
+            "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2F${KUSTOMIZE_VERSION}/kustomize_${KUSTOMIZE_VERSION}_linux_amd64.tar.gz"
+          tar -xzf kustomize.tar.gz
+          sudo mv kustomize /usr/local/bin/kustomize
+          rm kustomize.tar.gz
+          kustomize version
+
+      # Her değişen servis için overlay'deki images: bloğunu yeni etikete çevir.
+      # Örnek: kustomize edit set image ghcr.io/muhammedali55/product-service:abc1234
+      - name: kustomization.yaml'daki imaj etiketlerini güncelle
+        working-directory: k8s/overlays/dev
+        run: |
+          TAG="${GITHUB_SHA::7}"
+          for svc in $(echo "$SERVICES" | jq -r '.[]'); do
+            echo "→ $svc => $TAG"
+            kustomize edit set image "${IMAGE_PREFIX}/${svc}:${TAG}"
+          done
+          cat kustomization.yaml
+
+      # Değişikliği commit'le ve main'e gönder. Argo CD bu commit'i görüp sync eder.
+      # Not: GITHUB_TOKEN ile atılan commit yeni bir workflow tetiklemez,
+      # ayrıca k8s/ yolu paths filtresinde olmadığı için döngü oluşmaz.
+      - name: Commit ve push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add k8s/overlays/dev/kustomization.yaml
+          if git diff --cached --quiet; then
+            echo "Değişiklik yok, commit atlanıyor."
+            exit 0
+          fi
+          git commit -m "deploy(dev): imaj etiketi ${GITHUB_SHA::7}"
+          # Bu arada main'e başka commit geldiyse üstüne al, sonra gönder.
+          git pull --rebase origin main
+          git push origin HEAD:main

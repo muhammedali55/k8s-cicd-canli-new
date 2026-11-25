@@ -1,0 +1,17 @@
+# product-service için cluster içi Service (ClusterIP).
+# Cluster içinden "http://product-service:8080" adresiyle ulaşılır; HTTPRoute da trafiği buraya yollar.
+# Yalnızca readiness'i UP olan pod'lar trafik alır.
+apiVersion: v1
+kind: Service
+metadata:
+  name: product-service
+  labels:
+    app: product-service
+spec:
+  type: ClusterIP
+  selector:
+    app: product-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

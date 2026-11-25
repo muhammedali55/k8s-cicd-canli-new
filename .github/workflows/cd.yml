@@ -1,0 +1,131 @@
+# =============================================================================
+# CD — Yol A: push-tabanlı deploy (kubectl set image)
+# -----------------------------------------------------------------------------
+# Ne yapar?
+#   CI (ci.yml) main'de başarıyla bitince çalışır. CI'ın bıraktığı
+#   "deploy-<servis>" artifact'lerini indirir ve her servis için:
+#     1) kubectl set image   → Deployment'ı yeni imaj etiketine geçir
+#     2) kubectl rollout status --timeout=120s → yeni pod'lar hazır mı bekle
+#     3) Hazır olmazsa kubectl rollout undo → eski sürüme dön, job KIRMIZI biter
+#
+# DİKKAT — Yol A ve Yol B aynı anda açık OLMAMALI:
+#   Argo CD (gitops/argocd-app.yaml) selfHeal: true ile çalışır. Cluster'daki
+#   imaj Git'tekinden farklıysa onu Git'teki hâline GERİ ALIR. Yani burada
+#   yaptığımız "kubectl set image" birkaç saniye sonra Argo CD tarafından
+#   silinir. Bu yüzden repo değişkeni DEPLOY_MODE=gitops iken bu workflow
+#   hiç çalışmaz (aşağıdaki "if" koşulu).
+#
+# -----------------------------------------------------------------------------
+# Self-hosted runner kurulumu (kind cluster'ı kendi makinende olduğu için
+# GitHub'ın bulut runner'ları ona erişemez; runner'ı kendi makinende çalıştırırız):
+#
+#   1) GitHub'da repo → Settings → Actions → Runners → "New self-hosted runner".
+#   2) İşletim sistemini seç (macOS / Linux). Sayfadaki komutları sırayla çalıştır:
+#        mkdir actions-runner && cd actions-runner
+#        curl -o ... (sayfadaki indirme komutu)
+#        tar xzf ./actions-runner-*.tar.gz
+#        ./config.sh --url https://github.com/muhammedali55/k8s-cicd-canli-new --token <SAYFADAKİ_TOKEN>
+#      Token tek kullanımlıktır ve sayfada gösterilir; hiçbir dosyaya yazma.
+#   3) Runner'ı başlat:   ./run.sh
+#      (Kalıcı servis olarak: ./svc.sh install && ./svc.sh start)
+#   4) Runner'ın çalıştığı kullanıcıda kubectl kurulu olmalı ve kind
+#      cluster'ına erişebilmeli:
+#        kubectl --context kind-k8s-cicd get nodes
+#   5) Runner, Settings → Actions → Runners listesinde "Idle" görünmeli.
+#
+# Not: GHCR paketleri varsayılan olarak "private"tır. Cluster'ın imajı
+# çekebilmesi için paketi public yap ya da namespace'e imagePullSecret ekle.
+# =============================================================================
+
+name: CD
+
+# Tetikleyici: "CI" adlı workflow tamamlandığında.
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+
+# Aynı anda tek deploy çalışsın; yenisi gelirse sıraya girsin (iptal etme).
+concurrency:
+  group: cd-dev
+  cancel-in-progress: false
+
+# GITHUB_TOKEN yetkileri: CI'ın artifact'lerini okumak için actions: read.
+permissions:
+  contents: read
+  actions: read
+
+env:
+  # Hedef namespace (SPEC).
+  NAMESPACE: demo
+  # kind cluster'ının kubeconfig context adı (kind, "kind-" önekini ekler).
+  KUBE_CONTEXT: kind-k8s-cicd
+
+jobs:
+  deploy:
+    # Yalnızca: CI başarılı + olay main'e push + GitOps modu kapalı.
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      vars.DEPLOY_MODE != 'gitops'
+    # Kendi makinemizdeki runner (kind cluster'ına erişebilen).
+    runs-on: self-hosted
+    steps:
+      # CI'ın yüklediği deploy-* artifact'lerini indir.
+      # run-id: tetikleyen CI çalışmasının numarası.
+      # Hiç servis değişmediyse artifact olmaz; bu durumda adım boş klasör bırakır.
+      - name: CI'dan deploy bilgisini indir
+        uses: actions/download-artifact@v4.3.0
+        with:
+          pattern: deploy-*
+          merge-multiple: true
+          path: deploy
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Cluster'a erişebildiğimizi kontrol et (hata varsa erkenden görelim).
+      - name: Cluster erişimini kontrol et
+        run: kubectl --context "$KUBE_CONTEXT" get nodes
+
+      # Her servis için: set image → rollout status → gerekirse rollout undo.
+      - name: Yeni imajı deploy et (başarısızsa geri al)
+        shell: bash
+        run: |
+          # Kısaltma: her kubectl komutuna context ve namespace ekle.
+          k() { kubectl --context "$KUBE_CONTEXT" -n "$NAMESPACE" "$@"; }
+
+          # Herhangi bir servis başarısız olursa job'u sonunda kırmızı bitireceğiz.
+          failed=0
+
+          shopt -s nullglob
+          files=(deploy/*.txt)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "Deploy edilecek servis yok (CI imaj üretmedi)."
+            exit 0
+          fi
+
+          for f in "${files[@]}"; do
+            # Dosya adı = servis adı = Deployment adı = container adı.
+            svc="$(basename "$f" .txt)"
+            image="$(cat "$f")"
+            echo "::group::$svc → $image"
+
+            # 1) Deployment'taki container imajını değiştir → rollout başlar.
+            k set image "deployment/$svc" "$svc=$image"
+
+            # 2) Yeni pod'lar readiness probe'u geçene kadar en fazla 120 sn bekle.
+            if k rollout status "deployment/$svc" --timeout=120s; then
+              echo "$svc başarıyla güncellendi."
+            else
+              # 3) Süre doldu ya da pod'lar hazır olmadı → önceki sürüme dön.
+              echo "::error::$svc rollout başarısız, önceki sürüme dönülüyor."
+              k rollout undo "deployment/$svc"
+              k rollout status "deployment/$svc" --timeout=120s || true
+              failed=1
+            fi
+            echo "::endgroup::"
+          done
+
+          # Bir servis bile geri alındıysa job kırmızı bitsin.
+          exit "$failed"

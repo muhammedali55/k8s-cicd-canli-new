@@ -1,0 +1,18 @@
+# "dev" ortamı: kind cluster'ındaki "demo" namespace'i.
+# Argo CD bu klasörü izler. Pipeline'lar (GitHub Actions / Jenkins) YALNIZCA aşağıdaki
+# "images:" bloğundaki newTag değerlerini değiştirir, ör:
+#   cd k8s/overlays/dev && kustomize edit set image ghcr.io/muhammedali55/order-service:<git-sha-kısa>
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: demo
+
+resources:
+  - ../../base
+
+# Hangi imajın hangi tag'le çalışacağı. "latest" yasak.
+images:
+  - name: ghcr.io/muhammedali55/product-service
+    newTag: 0.1.0
+  - name: ghcr.io/muhammedali55/order-service
+    newTag: 0.1.0

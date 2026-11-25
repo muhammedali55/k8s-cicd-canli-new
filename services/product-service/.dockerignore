@@ -1,0 +1,9 @@
+# Docker build context'ine girmeyecek dosyalar: imaj küçük, build hızlı kalsın.
+target/
+.idea/
+.vscode/
+*.iml
+.DS_Store
+.git
+Dockerfile
+.dockerignore

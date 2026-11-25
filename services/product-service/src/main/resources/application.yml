@@ -1,0 +1,52 @@
+# product-service ayarları.
+# Varsayılanlar lokal geliştirme içindir; Kubernetes'te aynı anahtarlar ortam değişkenleriyle ezilir:
+#   SPRING_DATASOURCE_URL, SPRING_DATASOURCE_USERNAME, SPRING_DATASOURCE_PASSWORD, SERVER_PORT, APP_VERSION, DEMO_BROKEN
+
+spring:
+  application:
+    name: product-service
+  datasource:
+    url: jdbc:postgresql://localhost:5432/products
+    username: postgres
+    password: postgres
+  jpa:
+    # Tabloyu Flyway kurar; Hibernate sadece entity ile tablonun uyumlu olduğunu kontrol eder.
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+  flyway:
+    enabled: true
+  mvc:
+    # Spring'in kendi hataları da (ör. 405, 415) ProblemDetail formatında dönsün.
+    problemdetails:
+      enabled: true
+
+server:
+  port: 8081
+
+# Uygulamaya özel ayarlar
+app:
+  # /api/info'da görünen sürüm. CI/CD imajı oluştururken APP_VERSION'a git SHA'sını verir.
+  version: ${APP_VERSION:local}
+  # true ise readiness DOWN olur (canlıda "probe yakalar -> rollback" demosu için).
+  demo-broken: ${DEMO_BROKEN:false}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        # /actuator/health/liveness ve /actuator/health/readiness uçlarını açar (K8s dışında da).
+        enabled: true
+      group:
+        # Readiness grubuna özel "demoBroken" kontrolümüzü ekliyoruz.
+        # Liveness'a EKLEMİYORUZ: bozuk sürüm trafikten çekilsin ama pod sürekli yeniden başlatılmasın.
+        readiness:
+          include: readinessState,demoBroken
+
+logging:
+  level:
+    com.muhammedalihoca.demo.product: INFO

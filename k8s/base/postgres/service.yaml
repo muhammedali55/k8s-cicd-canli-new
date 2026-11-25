@@ -1,0 +1,18 @@
+# PostgreSQL için headless Service (clusterIP: None).
+# StatefulSet'ler sabit DNS adı için headless Service ister.
+# Servisler veritabanına "postgres:5432" adresiyle ulaşır; DNS doğrudan pod IP'sine çözülür
+# ve yalnızca pod "Ready" olduğunda kayıt döner.
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  labels:
+    app: postgres
+spec:
+  clusterIP: None
+  selector:
+    app: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres

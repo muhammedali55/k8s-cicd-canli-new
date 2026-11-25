@@ -1,0 +1,13 @@
+# kind cluster tanımı: tek node'lu "k8s-cicd" cluster'ı.
+# Bilgisayarın 80 portunu kind node'unun 80 portuna bağlar.
+# Node'un 80 portunu da Traefik pod'u "hostPort: 80" ile dinler (bkz. traefik-values.yaml).
+# Yol: tarayıcı/curl -> localhost:80 -> kind node:80 -> Traefik (web entrypoint, 8000) -> Gateway -> HTTPRoute -> Service
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: k8s-cicd
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      - containerPort: 80   # kind node'u (Docker container'ı) içindeki port
+        hostPort: 80        # senin bilgisayarındaki port -> http://localhost
+        protocol: TCP

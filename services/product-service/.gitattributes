@@ -1,0 +1,3 @@
+# mvnw Windows'ta checkout edilse bile Linux container'da çalışsın diye LF kalmalı.
+mvnw text eol=lf
+*.cmd text eol=crlf

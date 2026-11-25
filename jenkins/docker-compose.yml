@@ -1,0 +1,40 @@
+# Lokal Jenkins: Jenkinsfile'daki pipeline'ı (test → build → push → deploy) çalıştırır.
+# Kullanım:  cd jenkins && docker compose up -d --build
+# Arayüz:    http://localhost:8080
+
+services:
+  jenkins:
+    # İmajı aynı klasördeki Dockerfile'dan üret (Jenkins LTS + docker CLI + kubectl + eklentiler).
+    build: .
+    # Üretilen imaja okunur, sabit bir ad ve sürüm veriyoruz.
+    image: k8s-cicd-jenkins:2.516.3
+    container_name: jenkins
+    restart: unless-stopped
+    ports:
+      # Jenkins arayüzü (servisler lokalde 8081/8082 kullanır, çakışma yok).
+      - "8080:8080"
+    volumes:
+      # Kalıcı volume: job'lar, credential'lar, eklentiler ve ~/.m2 Maven önbelleği
+      # container silinse de burada kalır.
+      - jenkins_home:/var/jenkins_home
+      # Host'un Docker daemon'ına bağlan: imajlar host Docker'ında build edilir.
+      - /var/run/docker.sock:/var/run/docker.sock
+    # jenkins kullanıcısı docker.sock'a yazabilsin diye socket'in grubunu ekle.
+    # Docker Desktop (macOS/Windows): varsayılan 0 genelde yeterli.
+    # Linux: DOCKER_GID=$(getent group docker | cut -d: -f3) docker compose up -d
+    group_add:
+      - "${DOCKER_GID:-0}"
+    networks:
+      # kind'in Docker ağı: Jenkins, kind API sunucusuna buradan erişir
+      # (container içinde 127.0.0.1 kendisidir, host değil).
+      - kind
+
+volumes:
+  # Jenkins verisi için adlandırılmış volume.
+  jenkins_home:
+
+networks:
+  # kind cluster'ı kurulurken oluşturulan hazır ağ; compose onu yaratmaz, sadece katılır.
+  # Önce cluster kurulmuş olmalı (kind create cluster ...).
+  kind:
+    external: true

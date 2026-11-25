@@ -1,0 +1,99 @@
+# product-service Deployment'ı: 2 replika, Actuator probe'ları ve "bozuk sürüm eskiyi öldüremez" rolling update ayarı.
+# İmaj: GHCR'daki public paket (imagePullSecret YOK — paketin public olduğu varsayılır).
+# Gerçek tag'i k8s/overlays/dev/kustomization.yaml içindeki "images:" bloğu belirler.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: product-service
+  labels:
+    app: product-service
+spec:
+  replicas: 2
+  # Rolling update: önce 1 yeni pod aç (maxSurge: 1), hazır olmadan hiçbir eski pod'u kapatma (maxUnavailable: 0).
+  # Yeni sürüm readiness'ı geçemezse (ör. DEMO_BROKEN=true) rollout takılı kalır, eski 2 pod trafiğe devam eder.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: product-service
+  template:
+    metadata:
+      labels:
+        app: product-service
+    spec:
+      # PostgreSQL hazır olmadan Spring'i başlatma: aksi halde ilk açılışta pod'lar
+      # bağlantı hatasıyla CrashLoopBackOff'a düşer. Zaten çekilmiş postgres:17 imajındaki pg_isready kullanılır.
+      initContainers:
+        - name: wait-for-postgres
+          image: postgres:17
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c", "until pg_isready -h postgres -p 5432; do echo 'postgres bekleniyor...'; sleep 2; done"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+      containers:
+        - name: product-service
+          image: ghcr.io/muhammedali55/product-service:0.1.0
+          # IfNotPresent: "kind load docker-image" ile yüklenen lokal imaj tekrar çekilmeye çalışılmaz.
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          # Gizli olmayan ayarlar ConfigMap'ten (SERVER_PORT, SPRING_DATASOURCE_URL, DEMO_BROKEN ...).
+          envFrom:
+            - configMapRef:
+                name: product-service-config
+          env:
+            # DB kullanıcı adı ve şifresi Secret'tan (setup-cluster.sh oluşturur).
+            - name: SPRING_DATASOURCE_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: username
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: password
+            # JVM'in container bellek limitinin (%75'ini) heap olarak kullanmasını sağlar.
+            - name: JAVA_TOOL_OPTIONS
+              value: "-XX:MaxRAMPercentage=75.0"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 250m
+              memory: 512Mi
+          # startupProbe: Spring açılışı (düşük CPU limitiyle) yavaştır. Bu probe başarılı olana kadar
+          # liveness/readiness çalışmaz; böylece açılmakta olan pod "ölü" sanılıp yeniden başlatılmaz.
+          # En fazla 60 x 5 sn = 5 dakika beklenir.
+          startupProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            periodSeconds: 5
+            failureThreshold: 60
+          # livenessProbe: uygulama kilitlendiyse container yeniden başlatılır.
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # readinessProbe: DOWN ise pod Service'ten çıkarılır, trafik almaz (DEMO_BROKEN=true burada yakalanır).
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3

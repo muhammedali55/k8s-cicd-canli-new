@@ -1,0 +1,17 @@
+# order-service için ortam değişkenleri (gizli OLMAYAN ayarlar).
+# Deployment bu ConfigMap'i "envFrom" ile pod'a ortam değişkeni olarak verir.
+# DB kullanıcı adı / şifresi burada DEĞİL; "postgres-credentials" Secret'ından gelir.
+# APP_VERSION burada YOK: imajın içine Docker build-arg ile gömülür (sürüm imajla birlikte gelir/gider).
+# DEMO_BROKEN: "true" yapılırsa readiness DOWN döner (canlıda bozuk sürüm / rollback senaryosu).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: order-service-config
+  labels:
+    app: order-service
+data:
+  SERVER_PORT: "8080"
+  SPRING_DATASOURCE_URL: "jdbc:postgresql://postgres:5432/orders"
+  DEMO_BROKEN: "false"
+  # order-service, product-service'e bu adresle ulaşır (cluster içi DNS).
+  PRODUCT_SERVICE_URL: "http://product-service:8080"

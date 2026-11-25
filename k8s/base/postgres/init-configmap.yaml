@@ -1,0 +1,15 @@
+# PostgreSQL açılış script'i.
+# postgres imajı, /docker-entrypoint-initdb.d altındaki .sql dosyalarını
+# YALNIZCA veri dizini boşken (ilk açılışta) bir kez çalıştırır.
+# Her servis kendi veritabanını kullanır: product-service -> products, order-service -> orders.
+# Tablolar burada değil, servislerin Flyway migration'larında oluşturulur.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init
+  labels:
+    app: postgres
+data:
+  01-create-databases.sql: |
+    CREATE DATABASE products;
+    CREATE DATABASE orders;

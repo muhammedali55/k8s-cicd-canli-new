@@ -1,0 +1,52 @@
+# order-service yapılandırması.
+# Buradaki varsayılanlar LOKAL geliştirme içindir (IDE / docker run).
+# Kubernetes'te aynı ayarlar ortam değişkenleriyle ezilir:
+#   SPRING_DATASOURCE_URL, SPRING_DATASOURCE_USERNAME, SPRING_DATASOURCE_PASSWORD,
+#   SERVER_PORT, APP_VERSION, DEMO_BROKEN, PRODUCT_SERVICE_URL
+
+server:
+  port: 8082
+
+spring:
+  application:
+    name: order-service
+  datasource:
+    url: jdbc:postgresql://localhost:5432/orders
+    username: postgres
+    password: postgres
+  jpa:
+    # Şemayı Flyway yönetir; Hibernate yalnızca entity'lerin tabloyla uyumunu kontrol eder
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+  flyway:
+    enabled: true
+  mvc:
+    # Spring'in kendi hataları (404, 405, 400...) da ProblemDetail formatında döner
+    problemdetails:
+      enabled: true
+
+app:
+  # GET /api/info'da görünen sürüm
+  version: ${APP_VERSION:local}
+  # true ise readiness DOWN olur (bozuk sürüm demosu)
+  demo-broken: ${DEMO_BROKEN:false}
+  product-service:
+    url: ${PRODUCT_SERVICE_URL:http://localhost:8081}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      # /actuator/health/liveness ve /actuator/health/readiness gruplarını aç
+      probes:
+        enabled: true
+      show-details: always
+      group:
+        readiness:
+          # Varsayılan readiness durumu + DEMO_BROKEN anahtarı
+          include: readinessState,demoBroken
+          show-details: always

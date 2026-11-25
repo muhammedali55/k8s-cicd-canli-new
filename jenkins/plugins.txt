@@ -1,0 +1,16 @@
+# Jenkins imajı build edilirken jenkins-plugin-cli ile önceden kurulan eklentiler.
+# Sürüm yazılmadığında imaj build anındaki güncel uyumlu sürüm kurulur.
+# Tekrarlanabilir kurulum isterseniz "eklenti:sürüm" biçiminde sabitleyin.
+
+# Declarative Pipeline ve Jenkinsfile desteği
+workflow-aggregator
+# Git deposundan checkout
+git
+# GitHub webhook'u ("GitHub hook trigger for GITScm polling")
+github
+# Pipeline içinde docker komutları / docker.withRegistry
+docker-workflow
+# withCredentials ile secret'ları güvenle ortam değişkenine bağlama
+credentials-binding
+# withKubeConfig ile kubeconfig credential'ını kubectl'e verme
+kubernetes-cli

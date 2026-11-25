@@ -1,0 +1,83 @@
+# PostgreSQL 17: tek replikalı StatefulSet + kalıcı disk (PVC).
+# Kullanıcı adı / şifre "postgres-credentials" Secret'ından gelir.
+# Bu Secret repoda YOK; cluster/setup-cluster.sh "kubectl create secret" ile oluşturur
+# (gizli bilgi git'e yazılmaz kuralı).
+# İlk açılışta postgres-init ConfigMap'indeki script "products" ve "orders" veritabanlarını oluşturur.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  labels:
+    app: postgres
+spec:
+  serviceName: postgres        # headless Service adı (service.yaml)
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:17
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: username
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: password
+            # Veriyi bağlanan diskin bir alt klasörüne yaz (disk kökünde başka dosya olsa da initdb sorun çıkarmasın).
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 250m
+              memory: 512Mi
+          # Postgres HTTP konuşmaz; Actuator yok. Sağlık kontrolü için pg_isready kullanılır.
+          # -h 127.0.0.1: init sırasında postgres yalnızca unix socket'ten dinler; TCP'den cevap verdiğinde gerçekten hazırdır.
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -h 127.0.0.1 -p 5432 -U \"$POSTGRES_USER\""]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -h 127.0.0.1 -p 5432 -U \"$POSTGRES_USER\""]
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 6
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: init-scripts
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+      volumes:
+        - name: init-scripts
+          configMap:
+            name: postgres-init
+  # Her pod için otomatik PVC. kind'in varsayılan StorageClass'ı (local-path "standard") diski sağlar.
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi

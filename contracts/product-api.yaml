@@ -1,0 +1,301 @@
+# product-service HTTP sözleşmesi (OpenAPI 3.1).
+# product-service bu sözleşmeyi uygular, order-service bu sözleşmeye göre istemci yazar.
+# Tek doğruluk kaynağı SPEC.md'dir; bu dosya değiştirilmez, hata görülürse raporlanır.
+openapi: 3.1.0
+
+info:
+  title: product-service API
+  version: 0.1.0
+  description: |
+    Ürünleri listeleyen, oluşturan ve stok düşüren servis.
+    Tüm hata yanıtları RFC 9457 ProblemDetail formatındadır (`application/problem+json`).
+
+servers:
+  - url: http://localhost:8081
+    description: Lokal geliştirme (IDE / docker run)
+  - url: http://product-service:8080
+    description: Kubernetes içi (order-service buradan çağırır)
+  - url: http://localhost
+    description: kind cluster, Gateway üzerinden
+
+# Kimlik doğrulama kapsam dışı (SPEC §7): hiçbir uç güvenlik gerektirmez.
+security: []
+
+tags:
+  - name: products
+    description: Ürün işlemleri
+  - name: info
+    description: Çalışan sürüm bilgisi
+
+paths:
+  /api/products:
+    get:
+      tags: [products]
+      operationId: listProducts
+      summary: Tüm ürünleri listeler
+      responses:
+        "200":
+          description: Ürün listesi (boş olabilir)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Product"
+              example:
+                - { id: 1, name: "Mekanik Klavye", price: 1299.90, stock: 25 }
+                - { id: 2, name: "Kablosuz Mouse", price: 449.50, stock: 40 }
+                - { id: 3, name: "27 inç Monitör", price: 6999.00, stock: 10 }
+    post:
+      tags: [products]
+      operationId: createProduct
+      summary: Yeni ürün oluşturur
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateProductRequest"
+            example:
+              name: "USB-C Hub"
+              price: 799.00
+              stock: 15
+      responses:
+        "201":
+          description: Ürün oluşturuldu
+          headers:
+            Location:
+              description: Oluşturulan ürünün adresi
+              schema:
+                type: string
+              example: /api/products/4
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Product"
+              example:
+                id: 4
+                name: "USB-C Hub"
+                price: 799.00
+                stock: 15
+        "400":
+          $ref: "#/components/responses/ValidationError"
+
+  /api/products/{id}:
+    get:
+      tags: [products]
+      operationId: getProduct
+      summary: Tek ürünü getirir
+      parameters:
+        - $ref: "#/components/parameters/ProductId"
+      responses:
+        "200":
+          description: Ürün bulundu
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Product"
+              example:
+                id: 1
+                name: "Mekanik Klavye"
+                price: 1299.90
+                stock: 25
+        "404":
+          $ref: "#/components/responses/ProductNotFound"
+
+  /api/products/{id}/decrease-stock:
+    post:
+      tags: [products]
+      operationId: decreaseStock
+      summary: Ürünün stoğunu verilen miktar kadar düşürür
+      description: |
+        Stok yeterliyse düşürür ve ürünün güncel halini döner.
+        Stok yetersizse hiçbir şey değişmez ve 409 döner.
+      parameters:
+        - $ref: "#/components/parameters/ProductId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DecreaseStockRequest"
+            example:
+              quantity: 2
+      responses:
+        "200":
+          description: Stok düşürüldü; ürünün güncel hali
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Product"
+              example:
+                id: 1
+                name: "Mekanik Klavye"
+                price: 1299.90
+                stock: 23
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "404":
+          $ref: "#/components/responses/ProductNotFound"
+        "409":
+          description: Stok yetersiz
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+              example:
+                type: about:blank
+                title: Conflict
+                status: 409
+                detail: "Yetersiz stok: ürün 1 için istenen 30, mevcut 25"
+                instance: /api/products/1/decrease-stock
+
+  /api/info:
+    get:
+      tags: [info]
+      operationId: getInfo
+      summary: Servis adı ve çalışan sürüm
+      description: Sürüm `APP_VERSION` ortam değişkeninden gelir; yoksa `local`.
+      responses:
+        "200":
+          description: Servis bilgisi
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceInfo"
+              example:
+                service: product-service
+                version: a1b2c3d
+
+components:
+  parameters:
+    ProductId:
+      name: id
+      in: path
+      required: true
+      description: Ürün kimliği
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+      example: 1
+
+  schemas:
+    Product:
+      type: object
+      description: Ürünün dışarıya açılan hali
+      required: [id, name, price, stock]
+      properties:
+        id:
+          type: integer
+          format: int64
+          example: 1
+        name:
+          type: string
+          example: "Mekanik Klavye"
+        price:
+          type: number
+          description: Birim fiyat (Java tarafında BigDecimal)
+          exclusiveMinimum: 0
+          example: 1299.90
+        stock:
+          type: integer
+          format: int32
+          minimum: 0
+          example: 25
+
+    CreateProductRequest:
+      type: object
+      required: [name, price, stock]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          description: Boş olamaz
+          example: "USB-C Hub"
+        price:
+          type: number
+          exclusiveMinimum: 0
+          example: 799.00
+        stock:
+          type: integer
+          format: int32
+          minimum: 0
+          example: 15
+
+    DecreaseStockRequest:
+      type: object
+      required: [quantity]
+      properties:
+        quantity:
+          type: integer
+          format: int32
+          minimum: 1
+          description: Düşülecek adet, 0'dan büyük olmalı
+          example: 2
+
+    ServiceInfo:
+      type: object
+      required: [service, version]
+      properties:
+        service:
+          type: string
+          example: product-service
+        version:
+          type: string
+          description: APP_VERSION değeri; tanımlı değilse "local"
+          example: a1b2c3d
+
+    ProblemDetail:
+      type: object
+      description: |
+        RFC 9457 hata gövdesi. Spring'in `ProblemDetail` sınıfı bu alanları üretir.
+        Ek alanlara (extension) izin verilir.
+      required: [status, title]
+      properties:
+        type:
+          type: string
+          format: uri-reference
+          default: about:blank
+          example: about:blank
+        title:
+          type: string
+          example: Not Found
+        status:
+          type: integer
+          example: 404
+        detail:
+          type: string
+          example: "Ürün bulunamadı: 99"
+        instance:
+          type: string
+          format: uri-reference
+          example: /api/products/99
+      additionalProperties: true
+
+  responses:
+    ProductNotFound:
+      description: Ürün bulunamadı
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/ProblemDetail"
+          example:
+            type: about:blank
+            title: Not Found
+            status: 404
+            detail: "Ürün bulunamadı: 99"
+            instance: /api/products/99
+
+    ValidationError:
+      description: İstek gövdesi geçersiz
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/ProblemDetail"
+          example:
+            type: about:blank
+            title: Bad Request
+            status: 400
+            detail: "Geçersiz istek: price 0'dan büyük olmalı"
+            instance: /api/products

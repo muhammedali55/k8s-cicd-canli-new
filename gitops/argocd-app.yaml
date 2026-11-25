@@ -1,0 +1,36 @@
+# Argo CD Application: Git'teki k8s/overlays/dev klasörünü izler ve cluster'ı ona eşitler.
+# Git'te kustomization.yaml değişince (ci.yml'deki gitops-update job'u) yeni imaj otomatik deploy olur.
+# Uygulama:  kubectl apply -f gitops/argocd-app.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  # Argo CD arayüzünde görünecek ad.
+  name: k8s-cicd-canli-dev
+  # Application nesneleri Argo CD'nin kendi namespace'inde durur.
+  namespace: argocd
+spec:
+  # Argo CD'nin varsayılan projesi (kısıtlama yok).
+  project: default
+
+  # Kaynak: hangi repo, hangi branch, hangi klasör?
+  source:
+    repoURL: https://github.com/muhammedali55/k8s-cicd-canli-new
+    targetRevision: main
+    # Argo CD bu klasörde kustomization.yaml görünce otomatik "kustomize build" yapar.
+    path: k8s/overlays/dev
+
+  # Hedef: aynı cluster (Argo CD'nin kurulu olduğu), demo namespace'i.
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: demo
+
+  syncPolicy:
+    # Otomatik senkronizasyon: Git değişince elle "Sync" demeye gerek yok.
+    automated:
+      # Git'ten silinen kaynaklar cluster'dan da silinsin.
+      prune: true
+      # Cluster'da elle yapılan değişiklikler (ör. kubectl set image) Git'teki hâline geri alınsın.
+      selfHeal: true
+    syncOptions:
+      # demo namespace'i yoksa Argo CD oluştursun.
+      - CreateNamespace=true
